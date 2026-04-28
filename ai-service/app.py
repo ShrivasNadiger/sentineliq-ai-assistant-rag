@@ -15,23 +15,23 @@ app = Flask(__name__)
 
 # ── Register Blueprints (routes) ──────────────────────────────────────────────
 # AI Developer 1 routes
-from routes.describe import describe_bp
-from routes.recommend import recommend_bp
+# from routes.describe import describe_bp
+# from routes.recommend import recommend_bp
 
 # AI Developer 2 routes
 from routes.categorise import categorise_bp
-from routes.generate_report import generate_report_bp
+# from routes.generate_report import generate_report_bp
 
 # AI Developer 3 routes
-from routes.analyse_document import analyse_document_bp
-from routes.query import query_bp
+# from routes.analyse_document import analyse_document_bp
+# from routes.query import query_bp
 
-app.register_blueprint(describe_bp)
-app.register_blueprint(recommend_bp)
+# app.register_blueprint(describe_bp)
+# app.register_blueprint(recommend_bp)
 app.register_blueprint(categorise_bp)
-app.register_blueprint(generate_report_bp)
-app.register_blueprint(analyse_document_bp)
-app.register_blueprint(query_bp)
+# app.register_blueprint(generate_report_bp)
+# app.register_blueprint(analyse_document_bp)
+# app.register_blueprint(query_bp)
 
 # ── Health Check Endpoint ─────────────────────────────────────────────────────
 @app.route("/health", methods=["GET"])

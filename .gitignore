@@ -1,0 +1,35 @@
+# ── .gitignore — Tool-75 AI Assistant with RAG ────────────────────────────────
+# IMPORTANT: .env contains secrets — NEVER commit it
+
+# Environment secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+
+# ChromaDB persistent storage
+chroma_data/
+
+# Java / Maven
+target/
+*.class
+*.jar
+
+# Node / React
+node_modules/
+dist/
+.vite/
+
+# IDE files
+.idea/
+.vscode/
+*.iml
+
+# OS files
+.DS_Store
+Thumbs.db
