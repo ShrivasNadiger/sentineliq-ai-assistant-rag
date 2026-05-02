@@ -20,9 +20,9 @@ app = Flask(__name__)
 # from routes.recommend import recommend_bp
 
 # AI Developer 2 routes
-from routes.categorise import categorise_bp
+from routes.categorise_cached import categorise_bp
 from routes.generate_report import generate_report_bp
-from routes.health import health_bp
+from routes.health_v2 import health_bp
 
 # AI Developer 3 routes
 # from routes.analyse_document import analyse_document_bp

@@ -1,19 +1,21 @@
 """
-routes/categorise.py — POST /categorise
+routes/categorise.py — POST /categorise (with Redis Cache)
 Tool-75: AI Assistant with RAG | AI Developer 2
 
 Classifies any input text into a predefined category.
+Responses are cached in Redis for 15 minutes.
 
 Request Body:
     {
-        "text": "The server has been down for 2 hours and users cannot login."
+        "text"        : "The server has been down for 2 hours.",
+        "skip_cache"  : false   (optional — set true to force fresh AI call)
     }
 
 Response:
     {
         "category"   : "INCIDENT",
         "confidence" : 0.97,
-        "reasoning"  : "The input describes an active system outage affecting users.",
+        "reasoning"  : "Describes an active system outage affecting users.",
         "meta": {
             "model_used"       : "llama-3.3-70b-versatile",
             "tokens_used"      : 142,
@@ -27,16 +29,18 @@ import os
 import logging
 from flask import Blueprint, request, jsonify
 from services.groq_client import call_groq_json, get_fallback_response
+from services.redis_cache import cache_get, cache_set
 
 logger = logging.getLogger("categorise")
 
 categorise_bp = Blueprint("categorise", __name__)
 
-# ── Load prompt template from file ────────────────────────────────────────────
+ENDPOINT = "/categorise"
+
+# ── Load prompt template ──────────────────────────────────────────────────────
 PROMPT_PATH = os.path.join(os.path.dirname(__file__), "..", "prompts", "categorise_prompt.txt")
 
 def load_prompt() -> str:
-    """Load the categorise system prompt from file."""
     try:
         with open(PROMPT_PATH, "r", encoding="utf-8") as f:
             return f.read().strip()
@@ -44,57 +48,49 @@ def load_prompt() -> str:
         logger.error(f"Prompt file not found at {PROMPT_PATH}")
         return "Classify the input into a category and return JSON."
 
-
-# ── Valid categories ──────────────────────────────────────────────────────────
 VALID_CATEGORIES = {"RISK", "OPPORTUNITY", "INCIDENT", "TASK", "REPORT", "GENERAL"}
 
 
 # ── Route ─────────────────────────────────────────────────────────────────────
 @categorise_bp.route("/categorise", methods=["POST"])
 def categorise():
-    """
-    POST /categorise
-    Classify input text into a predefined category.
-    """
+    """POST /categorise — Classify input text with Redis caching."""
 
-    # ── 1. Parse and validate request body ───────────────────────────────────
+    # ── 1. Validate request ───────────────────────────────────────────────────
     data = request.get_json(silent=True)
 
     if not data:
-        return jsonify({
-            "error"  : "Request body must be valid JSON",
-            "status" : 400
-        }), 400
+        return jsonify({"error": "Request body must be valid JSON", "status": 400}), 400
 
     text = data.get("text", "").strip()
 
     if not text:
-        return jsonify({
-            "error"  : "Field 'text' is required and cannot be empty",
-            "status" : 400
-        }), 400
+        return jsonify({"error": "Field 'text' is required and cannot be empty", "status": 400}), 400
 
     if len(text) > 5000:
-        return jsonify({
-            "error"  : "Field 'text' must be under 5000 characters",
-            "status" : 400
-        }), 400
+        return jsonify({"error": "Field 'text' must be under 5000 characters", "status": 400}), 400
 
-    # ── 2. Load prompt and call Groq ──────────────────────────────────────────
+    # skip_cache=true forces a fresh Groq call, ignoring any cached response
+    skip_cache = data.get("skip_cache", False)
+
+    # ── 2. Check Redis cache first ────────────────────────────────────────────
+    if not skip_cache:
+        cached = cache_get(ENDPOINT, text)
+        if cached:
+            logger.info("Returning cached categorise response")
+            return jsonify(cached), 200
+
+    # ── 3. Call Groq ──────────────────────────────────────────────────────────
     system_prompt = load_prompt()
-
-    logger.info(f"Categorising input ({len(text)} chars)...")
-
     result = call_groq_json(
         prompt=f"Classify the following input:\n\n{text}",
         system_prompt=system_prompt,
-        temperature=0.1   # Low temperature = consistent, factual classification
+        temperature=0.1
     )
 
-    # ── 3. Handle Groq failure — return fallback ──────────────────────────────
+    # ── 4. Handle Groq failure ────────────────────────────────────────────────
     if not result:
-        logger.warning("Groq call failed — returning fallback response")
-        fallback = get_fallback_response("/categorise")
+        fallback = get_fallback_response(ENDPOINT)
         return jsonify({
             "category"   : "GENERAL",
             "confidence" : 0.0,
@@ -108,23 +104,20 @@ def categorise():
             }
         }), 200
 
-    # ── 4. Validate AI returned a known category ──────────────────────────────
+    # ── 5. Validate and build response ────────────────────────────────────────
     category   = result.get("category", "GENERAL").upper()
     confidence = result.get("confidence", 0.0)
     reasoning  = result.get("reasoning", "No reasoning provided.")
     meta       = result.get("_meta", {})
 
-    # If AI hallucinated an unknown category, default to GENERAL
     if category not in VALID_CATEGORIES:
-        logger.warning(f"AI returned unknown category '{category}' — defaulting to GENERAL")
+        logger.warning(f"Unknown category '{category}' — defaulting to GENERAL")
         category   = "GENERAL"
         confidence = 0.5
 
-    # Clamp confidence between 0.0 and 1.0
     confidence = max(0.0, min(1.0, float(confidence)))
 
-    # ── 5. Return structured response ─────────────────────────────────────────
-    return jsonify({
+    response = {
         "category"   : category,
         "confidence" : round(confidence, 2),
         "reasoning"  : reasoning,
@@ -134,4 +127,9 @@ def categorise():
             "response_time_ms" : meta.get("response_time_ms", 0),
             "cached"           : False
         }
-    }), 200
+    }
+
+    # ── 6. Store in Redis cache ───────────────────────────────────────────────
+    cache_set(ENDPOINT, text, response)
+
+    return jsonify(response), 200
