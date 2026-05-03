@@ -36,6 +36,7 @@ app.register_blueprint(health_bp)
 # app.register_blueprint(analyse_document_bp)
 app.register_blueprint(query_bp)
 
+
 # ── Run the App ───────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     port  = int(os.getenv("FLASK_PORT", 5000))
