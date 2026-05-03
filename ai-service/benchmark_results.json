@@ -1,0 +1,51 @@
+{
+  "targets": {
+    "/health": 200,
+    "/categorise": 3000,
+    "/query": 5000,
+    "/generate-report": 500
+  },
+  "results": {
+    "/health": {
+      "count": 50,
+      "failures": 0,
+      "min_ms": 2029.84,
+      "max_ms": 2184.57,
+      "avg_ms": 2070.67,
+      "p50_ms": 2065.22,
+      "p95_ms": 2106.87,
+      "p99_ms": 2114.94
+    },
+    "/categorise": {
+      "count": 50,
+      "failures": 0,
+      "min_ms": 2017.21,
+      "max_ms": 2572.1,
+      "avg_ms": 2065.55,
+      "p50_ms": 2039.85,
+      "p95_ms": 2214.91,
+      "p99_ms": 2301.43
+    },
+    "/query": {
+      "count": 50,
+      "failures": 0,
+      "min_ms": 2019.52,
+      "max_ms": 2066.81,
+      "avg_ms": 2038.65,
+      "p50_ms": 2038.86,
+      "p95_ms": 2056.73,
+      "p99_ms": 2064.31
+    },
+    "/generate-report": {
+      "count": 50,
+      "failures": 0,
+      "min_ms": 2012.91,
+      "max_ms": 2062.74,
+      "avg_ms": 2038.17,
+      "p50_ms": 2037.3,
+      "p95_ms": 2060.18,
+      "p99_ms": 2061.06
+    }
+  },
+  "all_passed": false
+}
