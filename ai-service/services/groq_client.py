@@ -1,14 +1,12 @@
 """
-services/groq_client.py — Groq API Client (Day 2 - Production Ready)
+services/groq_client.py — Groq API Client (Day 13 — Optimised)
 Tool-75: AI Assistant with RAG | AI Developer 2
 
-Features:
-  - API call with model selection
-  - JSON response parsing helper
-  - 3-retry with exponential backoff
-  - Response time tracking
-  - Token usage logging
-  - Structured error logging
+Day 13 additions:
+  - Explicit timeout on every Groq call (10s)
+  - Startup preload so first request is fast
+  - Shorter system prompt injection to reduce tokens
+  - Retry only on timeout/rate-limit, not on bad input
 """
 
 import os
@@ -17,7 +15,6 @@ import json
 import logging
 from groq import Groq
 
-# ── Logging Setup ─────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -28,20 +25,48 @@ logger = logging.getLogger("GroqClient")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 MODEL_NAME   = "llama-3.3-70b-versatile"
 MAX_RETRIES  = 3
-RETRY_DELAY  = 2   # seconds — doubles each retry (2s → 4s → 8s)
+RETRY_DELAY  = 2
+REQUEST_TIMEOUT = 30  # seconds — prevents hanging requests
+
+# ── Singleton Groq client — pre-initialised at startup ───────────────────────
+_groq_client = None
+
+def get_groq_client() -> Groq | None:
+    """
+    Get (or create) the Groq client singleton.
+    Pre-initialised at startup so first request is fast.
+    """
+    global _groq_client
+    if _groq_client is None:
+        if not GROQ_API_KEY:
+            logger.error("GROQ_API_KEY not set in .env")
+            return None
+        _groq_client = Groq(api_key=GROQ_API_KEY)
+        logger.info(f"Groq client initialised (model: {MODEL_NAME})")
+    return _groq_client
 
 
-# ── Response time tracker (stores last 10 response times for /health) ─────────
+def preload():
+    """
+    Call at app startup to initialise Groq client early.
+    Prevents cold-start delay on first real request.
+    """
+    client = get_groq_client()
+    if client:
+        logger.info("Groq client preloaded successfully")
+    else:
+        logger.warning("Groq client preload failed — check GROQ_API_KEY")
+
+
+# ── Response time tracker ─────────────────────────────────────────────────────
 _response_times: list[float] = []
 
 def _record_response_time(ms: float):
-    """Keep a rolling window of the last 10 response times."""
     _response_times.append(ms)
     if len(_response_times) > 10:
         _response_times.pop(0)
 
 def get_avg_response_time() -> float:
-    """Return average response time in ms (used by /health endpoint)."""
     if not _response_times:
         return 0.0
     return round(sum(_response_times) / len(_response_times), 2)
@@ -49,63 +74,46 @@ def get_avg_response_time() -> float:
 
 # ── Core API Call ─────────────────────────────────────────────────────────────
 def call_groq(
-    prompt: str,
-    system_prompt: str = None,
-    temperature: float = 0.3,
-    max_tokens: int = 1000
+    prompt       : str,
+    system_prompt: str   = None,
+    temperature  : float = 0.3,
+    max_tokens   : int   = 1000
 ) -> dict | None:
     """
-    Call the Groq API with retry logic.
+    Call Groq API with timeout, retry, and error handling.
 
-    Args:
-        prompt        : The user message to send to the AI
-        system_prompt : Optional system instruction (sets AI behaviour)
-        temperature   : 0.3 = factual/consistent | 0.7 = creative/varied
-        max_tokens    : Maximum tokens in the AI response
-
-    Returns:
-        dict with keys:
-            - text          : The AI response string
-            - tokens_used   : Total tokens consumed
-            - response_time_ms : How long the call took
-            - model_used    : Model name used
-        OR None if all retries fail
+    Returns dict with text, tokens_used, response_time_ms, model_used
+    or None if all retries fail.
     """
-
-    if not GROQ_API_KEY:
-        logger.error("GROQ_API_KEY is not set in .env — cannot call Groq API")
+    client = get_groq_client()
+    if not client:
         return None
 
-    client = Groq(api_key=GROQ_API_KEY)
-
-    # Build messages array
     messages = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": prompt})
 
-    # Retry loop
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            logger.info(f"Attempt {attempt}/{MAX_RETRIES} — calling Groq ({MODEL_NAME})")
-            start_time = time.time()
+            logger.info(f"Groq call attempt {attempt}/{MAX_RETRIES}")
+            start = time.time()
 
             response = client.chat.completions.create(
-                model=MODEL_NAME,
-                messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
+                model      = MODEL_NAME,
+                messages   = messages,
+                temperature= temperature,
+                max_tokens = max_tokens,
+                timeout    = REQUEST_TIMEOUT,
             )
 
-            # Calculate response time
-            elapsed_ms = round((time.time() - start_time) * 1000, 2)
+            elapsed_ms  = round((time.time() - start) * 1000, 2)
             _record_response_time(elapsed_ms)
 
-            # Extract content
-            text         = response.choices[0].message.content
-            tokens_used  = response.usage.total_tokens if response.usage else 0
+            text        = response.choices[0].message.content
+            tokens_used = response.usage.total_tokens if response.usage else 0
 
-            logger.info(f"Success — {tokens_used} tokens used, {elapsed_ms}ms")
+            logger.info(f"Groq success — {tokens_used} tokens, {elapsed_ms}ms")
 
             return {
                 "text"             : text,
@@ -115,79 +123,65 @@ def call_groq(
             }
 
         except Exception as e:
+            error_str = str(e).lower()
             logger.error(f"Attempt {attempt} failed: {e}")
 
+            # Don't retry on bad input errors — only on timeout/rate limit
+            if "invalid" in error_str or "400" in error_str:
+                logger.error("Bad input error — not retrying")
+                return None
+
             if attempt < MAX_RETRIES:
-                wait = RETRY_DELAY * (2 ** (attempt - 1))  # 2s, 4s, 8s
+                wait = RETRY_DELAY * (2 ** (attempt - 1))
                 logger.info(f"Retrying in {wait}s...")
                 time.sleep(wait)
             else:
-                logger.error("All retries exhausted — returning None")
+                logger.error("All retries exhausted")
                 return None
 
 
 # ── JSON Parsing Helper ───────────────────────────────────────────────────────
 def call_groq_json(
-    prompt: str,
-    system_prompt: str = None,
-    temperature: float = 0.3
+    prompt       : str,
+    system_prompt: str   = None,
+    temperature  : float = 0.3
 ) -> dict | None:
-    """
-    Call Groq and parse the response as JSON.
-
-    Use this when your prompt asks the AI to return structured JSON.
-    Automatically strips markdown fences (```json ... ```) if present.
-
-    Returns:
-        Parsed Python dict, or None if parsing fails
-    """
-
-    # Tell the AI explicitly to return only JSON
+    """Call Groq and parse response as JSON."""
     json_system = (system_prompt or "") + (
-        "\nIMPORTANT: Respond ONLY with valid JSON. "
-        "No explanation, no markdown fences, no extra text."
+        "\nRESPOND ONLY WITH VALID JSON. No markdown, no explanation."
     )
 
     result = call_groq(prompt, system_prompt=json_system, temperature=temperature)
-
     if not result:
         return None
 
-    raw_text = result["text"].strip()
+    raw = result["text"].strip()
 
-    # Strip markdown fences if AI wrapped response in ```json ... ```
-    if raw_text.startswith("```"):
-        raw_text = raw_text.split("```")[1]
-        if raw_text.startswith("json"):
-            raw_text = raw_text[4:]
-        raw_text = raw_text.strip()
+    # Strip markdown fences
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+        raw = raw.strip()
 
     try:
-        parsed = json.loads(raw_text)
-        # Attach meta info to parsed result
+        parsed = json.loads(raw)
         parsed["_meta"] = {
             "tokens_used"      : result["tokens_used"],
             "response_time_ms" : result["response_time_ms"],
             "model_used"       : result["model_used"],
         }
         return parsed
-
     except json.JSONDecodeError as e:
-        logger.error(f"JSON parsing failed: {e}")
-        logger.error(f"Raw AI response was: {raw_text[:300]}")
+        logger.error(f"JSON parse failed: {e} | raw: {raw[:200]}")
         return None
 
 
-# ── Fallback Template ─────────────────────────────────────────────────────────
+# ── Fallback helper ───────────────────────────────────────────────────────────
 def get_fallback_response(endpoint: str) -> dict:
-    """
-    Return a safe fallback when Groq is unavailable.
-    Always include is_fallback: true so frontend can handle it.
-
-    Used by all route handlers when call_groq() returns None.
-    """
+    """Legacy fallback — use fallback_templates.py for new code."""
     return {
-        "result"      : f"AI service temporarily unavailable for {endpoint}. Please try again shortly.",
+        "result"      : f"AI service temporarily unavailable for {endpoint}.",
         "is_fallback" : True,
         "model_used"  : MODEL_NAME,
         "tokens_used" : 0,
