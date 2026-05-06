@@ -70,7 +70,6 @@ def categorise():
     if len(text) > 5000:
         return jsonify({"error": "Field 'text' must be under 5000 characters", "status": 400}), 400
 
-    # skip_cache=true forces a fresh Groq call, ignoring any cached response
     skip_cache = data.get("skip_cache", False)
 
     # ── 2. Check Redis cache first ────────────────────────────────────────────
@@ -104,19 +103,26 @@ def categorise():
             }
         }), 200
 
-    # ── 5. Validate and build response ────────────────────────────────────────
+    # ── 5. Extract _meta FIRST by popping it out ──────────────────────────────
+    # call_groq_json injects _meta into the result dict
+    # must pop() it before reading other keys
+    meta       = result.pop("_meta", {})
     category   = result.get("category", "GENERAL").upper()
-    confidence = result.get("confidence", 0.0)
-    reasoning  = result.get("reasoning", "No reasoning provided.")
-    meta       = result.get("_meta", {})
+    confidence = float(result.get("confidence", 0.5))
+    reasoning  = result.get("reasoning", "")
 
+    # ── 6. Validate category ──────────────────────────────────────────────────
     if category not in VALID_CATEGORIES:
         logger.warning(f"Unknown category '{category}' — defaulting to GENERAL")
         category   = "GENERAL"
         confidence = 0.5
 
-    confidence = max(0.0, min(1.0, float(confidence)))
+    confidence = max(0.0, min(1.0, confidence))
 
+    if not reasoning:
+        reasoning = f"Input classified as {category} based on content analysis."
+
+    # ── 7. Build response ─────────────────────────────────────────────────────
     response = {
         "category"   : category,
         "confidence" : round(confidence, 2),
@@ -129,7 +135,7 @@ def categorise():
         }
     }
 
-    # ── 6. Store in Redis cache ───────────────────────────────────────────────
+    # ── 8. Store in Redis cache ───────────────────────────────────────────────
     cache_set(ENDPOINT, text, response)
 
     return jsonify(response), 200
